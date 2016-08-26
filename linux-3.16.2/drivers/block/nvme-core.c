@@ -62,6 +62,11 @@ static unsigned char retry_time = 30;
 module_param(retry_time, byte, 0644);
 MODULE_PARM_DESC(retry_time, "time in seconds to retry failed I/O");
 
+static int strategy = 0; // 0-> sector 1-> object
+module_param(strategy, int, 0644);
+MODULE_PARM_DESC(strategy, "nvme strategy to be used -> 0 for sector or 1 for object");
+
+
 static int nvme_major;
 module_param(nvme_major, int, 0);
 
@@ -1575,6 +1580,11 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	if (copy_from_user(&io, uio, sizeof(io)))
 		return -EFAULT;
 	length = (io.nblocks + 1) << ns->lba_shift;
+
+	
+	printk(KERN_NOTICE "metadata address is:%llu\n", io.metadata);
+	printk(KERN_NOTICE "io.nblocks is:%d ns->ms is:%d\n", io.nblocks, ns->ms);
+	
 	meta_len = (io.nblocks + 1) * ns->ms;
 
 	if (meta_len && ((io.metadata & 3) || !io.metadata))
@@ -1605,7 +1615,10 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	c.rw.apptag = cpu_to_le16(io.apptag);
 	c.rw.appmask = cpu_to_le16(io.appmask);
 
+	printk(KERN_NOTICE "meta_len is: %d\n", meta_len);
+
 	if (meta_len) {
+		//map the userspace memory pages which belong to the datameta data to meta_iod
 		meta_iod = nvme_map_user_pages(dev, io.opcode & 1, io.metadata,
 								meta_len);
 		if (IS_ERR(meta_iod)) {
@@ -1614,16 +1627,18 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 			goto unmap;
 		}
 
+		//allocate dma memory and return the virtual address of the cpu region (meta_mem) and the corresponding
+		//device dma address handle (meta_dma_addr)
 		meta_mem = dma_alloc_coherent(&dev->pci_dev->dev, meta_len,
 						&meta_dma_addr, GFP_KERNEL);
 		if (!meta_mem) {
 			status = -ENOMEM;
 			goto unmap;
 		}
-
-		if (io.opcode & 1) {
+		if ( ( strategy == 1 && (io.opcode & 1 || io.opcode & 2) ) || ( strategy == 0 && io.opcode & 1 ) ) {
 			int meta_offset = 0;
-
+			//for each metadata sg page inside meta_iod, map its address to the meta pointer and
+			//then copy it to the cpu dma memory region at an increasing offset
 			for (i = 0; i < meta_iod->nents; i++) {
 				meta = kmap_atomic(sg_page(&meta_iod->sg[i])) +
 						meta_iod->sg[i].offset;
@@ -1634,19 +1649,26 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 			}
 		}
 
+		//printk(KERN_NOTICE "meta_dma_addr: %pad\n", &meta_dma_addr);
+		//set the metadata dma address's handle so it can be sent to the device
 		c.rw.metadata = cpu_to_le64(meta_dma_addr);
+		printk(KERN_NOTICE "meta_dma_addr handle is: %llX\n", c.rw.metadata);
 	}
 
 	length = nvme_setup_prps(dev, iod, length, GFP_KERNEL);
 	c.rw.prp1 = cpu_to_le64(sg_dma_address(iod->sg));
 	c.rw.prp2 = cpu_to_le64(iod->first_dma);
+	printk(KERN_NOTICE "c.rw.prp1: %llX\n" ,c.rw.prp1);
+	printk(KERN_NOTICE "c.rw.prp2: %llX\n", c.rw.prp2);
 
 	if (length != (io.nblocks + 1) << ns->lba_shift)
 		status = -ENOMEM;
 	else
 		status = nvme_submit_io_cmd(dev, &c, NULL);
 
-	if (meta_len) {
+	//if strategy is sector strategy and we're reading -> then also read the metadata buffer, if it exists
+	//don't do this for object strategy, as we're writing to the metadata buffer, and not reading from it
+	if (strategy == 0 && meta_len) {
 		if (status == NVME_SC_SUCCESS && !(io.opcode & 1)) {
 			int meta_offset = 0;
 
@@ -1926,8 +1948,11 @@ static struct nvme_ns *nvme_alloc_ns(struct nvme_dev *dev, unsigned nsid,
 	ns->ns_id = nsid;
 	ns->disk = disk;
 	lbaf = id->flbas & 0xf;
+	printk(KERN_NOTICE "id->flbas is:%d lbaf is:%d\n", id->flbas,lbaf);
 	ns->lba_shift = id->lbaf[lbaf].ds;
 	ns->ms = le16_to_cpu(id->lbaf[lbaf].ms);
+	//ns->ms = 1;	
+	printk(KERN_NOTICE "ns->ms is:%d\n", ns->ms);
 	blk_queue_logical_block_size(ns->queue, 1 << ns->lba_shift);
 	if (dev->max_hw_sectors)
 		blk_queue_max_hw_sectors(ns->queue, dev->max_hw_sectors);
@@ -2949,6 +2974,7 @@ static int __init nvme_init(void)
 	result = pci_register_driver(&nvme_driver);
 	if (result)
 		goto unregister_hotcpu;
+	printk(KERN_NOTICE "strategy is: %d\n", strategy);
 	return 0;
 
  unregister_hotcpu:
