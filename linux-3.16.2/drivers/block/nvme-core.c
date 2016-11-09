@@ -1,3 +1,4 @@
+
 /*
  * NVM Express device driver
  * Copyright (c) 2011-2014, Intel Corporation.
@@ -140,6 +141,7 @@ static inline void _nvme_check_size(void)
 	BUILD_BUG_ON(sizeof(struct nvme_id_ns) != 4096);
 	BUILD_BUG_ON(sizeof(struct nvme_lba_range_type) != 64);
 	BUILD_BUG_ON(sizeof(struct nvme_smart_log) != 512);
+        BUILD_BUG_ON(sizeof(struct nvme_obj_command) != 12345);
 }
 
 typedef void (*nvme_completion_fn)(struct nvme_queue *, void *,
@@ -1566,6 +1568,19 @@ void nvme_unmap_user_pages(struct nvme_dev *dev, int write,
 		put_page(sg_page(&iod->sg[i]));
 }
 
+// TODO in the future, to connect fs we need also nvme_submit_objd function
+static int nvme_submit_obj_cmd(struct nvme_ns *ns, struct nvme_user_io __user *uio)
+{
+
+  // TODO when in the future identify command will return that ns is not suporting objects,
+  // return an error
+
+  // copy nvme_submit_io content and revert nvme_submit_io to the original state
+  // also change the nvme-cli to its original state and add functionality for objects to nvme-cli
+  // to test the new ioctl in the driver
+
+}
+
 static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 {
 	struct nvme_dev *dev = ns->dev;
@@ -1765,6 +1780,8 @@ static int nvme_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 		return ns->ns_id;
 	case NVME_IOCTL_ADMIN_CMD:
 		return nvme_user_admin_cmd(ns->dev, (void __user *)arg);
+        case NVME_IOCTL_SUBMIT_OBJ_CMD:
+                return nvme_submit_obj_cmd(ns, (void __user *)arg);
 	case NVME_IOCTL_SUBMIT_IO:
 		return nvme_submit_io(ns, (void __user *)arg);
 	case SG_GET_VERSION_NUM:
