@@ -184,12 +184,16 @@ enum {
 /* I/O commands */
 
 enum nvme_opcode {
-	nvme_cmd_flush		= 0x00,
-	nvme_cmd_write		= 0x01,
-	nvme_cmd_read		= 0x02,
+	nvme_cmd_flush			= 0x00,
+	nvme_cmd_write			= 0x01,
+	nvme_cmd_read			= 0x02,
 	nvme_cmd_write_uncor	= 0x04,
-	nvme_cmd_compare	= 0x05,
-	nvme_cmd_dsm		= 0x09,
+	nvme_cmd_compare		= 0x05,
+	nvme_cmd_dsm			= 0x09,
+	nvme_cmd_obj_write		= 0x0b,
+	nvme_cmd_obj_read		= 0x0c,
+    nvme_cmd_obj_create     = 0x12,
+    nvme_cmd_obj_delete     = 0x13,
 };
 
 struct nvme_common_command {
@@ -214,6 +218,24 @@ struct nvme_rw_command {
 	__le64			prp1;
 	__le64			prp2;
 	__le64			slba;
+	__le16			length;
+	__le16			control;
+	__le32			dsmgmt;
+	__le32			reftag;
+	__le16			apptag;
+	__le16			appmask;
+};
+
+struct nvme_obj_command {
+	__u8			opcode;
+	__u8			flags;
+	__u16			command_id;
+	__le32			nsid;
+	__u64			rsvd2;
+	__le64			metadata;
+	__le64			prp1;
+	__le64			prp2;
+	__le64			object_id;
 	__le16			length;
 	__le16			control;
 	__le32			dsmgmt;
@@ -275,7 +297,7 @@ enum nvme_admin_opcode {
 	nvme_admin_get_log_page		= 0x02,
 	nvme_admin_delete_cq		= 0x04,
 	nvme_admin_create_cq		= 0x05,
-	nvme_admin_identify		= 0x06,
+	nvme_admin_identify			= 0x06,
 	nvme_admin_abort_cmd		= 0x08,
 	nvme_admin_set_features		= 0x09,
 	nvme_admin_get_features		= 0x0a,
@@ -423,6 +445,7 @@ struct nvme_command {
 		struct nvme_format_cmd format;
 		struct nvme_dsm_cmd dsm;
 		struct nvme_abort_cmd abort;
+		struct nvme_obj_command obj;
 	};
 };
 
@@ -466,8 +489,14 @@ enum {
 };
 
 struct nvme_completion {
-	__le32	result;		/* Used by admin commands to return data */
-	__u32	rsvd;
+
+	/* Used by admin commands to return data */
+	union {
+	     __le16  result16;
+	     __le32  result;
+	     __le64  result64;
+    };
+     
 	__le16	sq_head;	/* how much of this queue may be reclaimed */
 	__le16	sq_id;		/* submission queue that generated this entry */
 	__u16	command_id;	/* of the command which completed */
@@ -483,6 +512,30 @@ struct nvme_user_io {
 	__u64	metadata;
 	__u64	addr;
 	__u64	slba;
+	__u32	dsmgmt;
+	__u32	reftag;
+	__u16	apptag;
+	__u16	appmask;
+};
+
+struct nvme_object_ctrl {
+	__u8	opcode;
+	__u8	flags;
+	__u64	object_id;
+	__u64	metadata;
+	__u64	length;
+	__u32	nsid;
+};
+
+struct nvme_object_io {
+	__u8	opcode;
+	__u8	flags;
+	__u16	control;
+	__u16	size;
+	__u16	rsvd;
+	__u64	metadata;
+	__u64	addr;
+	__u64	object_id;
 	__u32	dsmgmt;
 	__u32	reftag;
 	__u16	apptag;
@@ -510,8 +563,12 @@ struct nvme_admin_cmd {
 	__u32	result;
 };
 
-#define NVME_IOCTL_ID		_IO('N', 0x40)
+
+#define NVME_IOCTL_ID		    _IO('N', 0x40)
 #define NVME_IOCTL_ADMIN_CMD	_IOWR('N', 0x41, struct nvme_admin_cmd)
 #define NVME_IOCTL_SUBMIT_IO	_IOW('N', 0x42, struct nvme_user_io)
+
+#define NVME_IOCTL_OBJECT_SUBMIT_IO	_IOWR('N', 0x50, struct nvme_object_io)
+#define NVME_IOCTL_OBJECT_CTRL   	_IOWR('N', 0x51, struct nvme_object_ctrl)
 
 #endif /* _UAPI_LINUX_NVME_H */

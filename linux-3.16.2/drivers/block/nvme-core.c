@@ -1,3 +1,4 @@
+
 /*
  * NVM Express device driver
  * Copyright (c) 2011-2014, Intel Corporation.
@@ -61,11 +62,6 @@ MODULE_PARM_DESC(io_timeout, "timeout in seconds for I/O");
 static unsigned char retry_time = 30;
 module_param(retry_time, byte, 0644);
 MODULE_PARM_DESC(retry_time, "time in seconds to retry failed I/O");
-
-static int strategy = 0; // 0-> sector 1-> object
-module_param(strategy, int, 0644);
-MODULE_PARM_DESC(strategy, "nvme strategy to be used -> 0 for sector or 1 for object");
-
 
 static int nvme_major;
 module_param(nvme_major, int, 0);
@@ -883,15 +879,20 @@ static void nvme_abort_command(struct nvme_queue *nvmeq, int cmdid)
 
 struct sync_cmd_info {
 	struct task_struct *task;
-	u32 result;
+
+	union {
+		 __le16  result16;
+		 __le32  result;
+		 __le64  result64;
+	};
+
 	int status;
 };
 
-static void sync_completion(struct nvme_queue *nvmeq, void *ctx,
-						struct nvme_completion *cqe)
+static void sync_completion(struct nvme_queue *nvmeq, void *ctx, struct nvme_completion *cqe)
 {
 	struct sync_cmd_info *cmdinfo = ctx;
-	cmdinfo->result = le32_to_cpup(&cqe->result);
+	cmdinfo->result64 = le64_to_cpup(&cqe->result64);
 	cmdinfo->status = le16_to_cpup(&cqe->status) >> 1;
 	wake_up_process(cmdinfo->task);
 }
@@ -900,9 +901,9 @@ static void sync_completion(struct nvme_queue *nvmeq, void *ctx,
  * Returns 0 on success.  If the result is negative, it's a Linux error code;
  * if the result is positive, it's an NVM Express status code
  */
-static int nvme_submit_sync_cmd(struct nvme_dev *dev, int q_idx,
+static int __nvme_submit_sync_cmd(struct nvme_dev *dev, int q_idx,
 						struct nvme_command *cmd,
-						u32 *result, unsigned timeout)
+						u64 *result, unsigned timeout)
 {
 	int cmdid, ret;
 	struct sync_cmd_info cmdinfo;
@@ -943,9 +944,27 @@ static int nvme_submit_sync_cmd(struct nvme_dev *dev, int q_idx,
 	}
 
 	if (result)
-		*result = cmdinfo.result;
+		*result = cmdinfo.result64;
 
 	return cmdinfo.status;
+}
+
+/*
+ * Returns 0 on success.  If the result is negative, it's a Linux error code;
+ * if the result is positive, it's an NVM Express status code
+ */
+static int nvme_submit_sync_cmd(
+	struct nvme_dev *dev, int q_idx,
+	struct nvme_command *cmd,
+	u32 *result,
+	unsigned timeout
+)
+{
+	u64 temp;
+	int status = __nvme_submit_sync_cmd(dev, q_idx, cmd, &temp, timeout);
+	if (result)
+		*result = (u32)temp;
+	return status;
 }
 
 static int nvme_submit_async_cmd(struct nvme_queue *nvmeq,
@@ -967,6 +986,18 @@ int nvme_submit_admin_cmd(struct nvme_dev *dev, struct nvme_command *cmd,
 {
 	return nvme_submit_sync_cmd(dev, 0, cmd, result, ADMIN_TIMEOUT);
 }
+
+int __nvme_submit_io_cmd(struct nvme_dev *dev, struct nvme_command *cmd, u64 *result)
+{
+	return __nvme_submit_sync_cmd(
+		dev,
+		smp_processor_id() + 1,
+		cmd,
+		result,
+		NVME_IO_TIMEOUT
+	);
+}
+
 
 int nvme_submit_io_cmd(struct nvme_dev *dev, struct nvme_command *cmd,
 								u32 *result)
@@ -1566,6 +1597,155 @@ void nvme_unmap_user_pages(struct nvme_dev *dev, int write,
 		put_page(sg_page(&iod->sg[i]));
 }
 
+// TODO in the future, to connect fs we need also nvme_submit_objd function
+static int nvme_obj_ctrl(struct nvme_ns *ns, struct nvme_object_ctrl __user * uctrl)
+{
+	struct nvme_dev *dev = ns->dev;
+	struct nvme_object_ctrl ctrl;
+	struct nvme_command c;
+	int status;
+	u64 oid;
+
+	// TODO when in the future identify command will return that ns is not suporting objects,
+	// return an error
+
+	// copy nvme_submit_io content and revert nvme_submit_io to the original state
+	// also change the nvme-cli to its original state and add functionality for objects to nvme-cli
+	// to test the new ioctl in the driver
+
+	printk(KERN_ALERT "submitted an object cmd\n");
+
+	if (copy_from_user(&ctrl, uctrl, sizeof(ctrl)))
+		return -EFAULT;
+
+	memset(&c, 0, sizeof(c));
+	c.common.opcode = ctrl.opcode;
+	c.common.nsid	= ctrl.nsid;
+
+	if (nvme_cmd_obj_delete == ctrl.opcode)
+		c.obj.object_id = ctrl.object_id;
+
+	status = __nvme_submit_io_cmd(dev, &c, &oid);
+
+	if (status >= 0 && (nvme_cmd_obj_create == ctrl.opcode))
+		if (copy_to_user(&uctrl->object_id, &oid, sizeof(oid)))
+			status = -EFAULT;
+
+	return status;
+}
+
+static int nvme_submit_object_io(struct nvme_ns *ns, struct nvme_object_io __user *uio)
+{
+	struct nvme_dev *dev = ns->dev;
+	struct nvme_object_io io;
+	struct nvme_command c;
+	unsigned length, meta_len;
+	int status, i;
+	struct nvme_iod *iod, *meta_iod = NULL;
+	dma_addr_t meta_dma_addr;
+	void *meta, *uninitialized_var(meta_mem);
+
+	if (copy_from_user(&io, uio, sizeof(io)))
+		return -EFAULT;
+	length = (io.size + 1) << ns->lba_shift;
+	meta_len = ns->ms;
+
+	if (meta_len && ((io.metadata & 3) || !io.metadata))
+		return -EINVAL;
+
+	switch (io.opcode) {
+	case nvme_cmd_obj_write:
+	case nvme_cmd_obj_read:
+		iod = nvme_map_user_pages(dev, io.opcode & 1, io.addr, length);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (IS_ERR(iod))
+		return PTR_ERR(iod);
+
+	memset(&c, 0, sizeof(c));
+	c.obj.opcode = io.opcode;
+	c.obj.flags = io.flags;
+	c.obj.nsid = cpu_to_le32(ns->ns_id);
+	c.obj.object_id = cpu_to_le64(io.object_id);
+	c.obj.length = cpu_to_le16(io.size);
+	c.obj.control = cpu_to_le16(io.control);
+	c.obj.dsmgmt = cpu_to_le32(io.dsmgmt);
+	c.obj.reftag = cpu_to_le32(io.reftag);
+	c.obj.apptag = cpu_to_le16(io.apptag);
+	c.obj.appmask = cpu_to_le16(io.appmask);
+
+	if (meta_len) {
+		meta_iod = nvme_map_user_pages(dev, io.opcode & 1, io.metadata,
+								meta_len);
+		if (IS_ERR(meta_iod)) {
+			status = PTR_ERR(meta_iod);
+			meta_iod = NULL;
+			goto unmap;
+		}
+
+		meta_mem = dma_alloc_coherent(&dev->pci_dev->dev, meta_len,
+						&meta_dma_addr, GFP_KERNEL);
+		if (!meta_mem) {
+			status = -ENOMEM;
+			goto unmap;
+		}
+
+		if (io.opcode & 1) {
+			int meta_offset = 0;
+
+			for (i = 0; i < meta_iod->nents; i++) {
+				meta = kmap_atomic(sg_page(&meta_iod->sg[i])) +
+						meta_iod->sg[i].offset;
+				memcpy(meta_mem + meta_offset, meta,
+						meta_iod->sg[i].length);
+				kunmap_atomic(meta);
+				meta_offset += meta_iod->sg[i].length;
+			}
+		}
+
+		c.obj.metadata = cpu_to_le64(meta_dma_addr);
+	}
+
+	length = nvme_setup_prps(dev, iod, length, GFP_KERNEL);
+	c.obj.prp1 = cpu_to_le64(sg_dma_address(iod->sg));
+	c.obj.prp2 = cpu_to_le64(iod->first_dma);
+
+	if (length != (io.size + 1) << ns->lba_shift)
+		status = -ENOMEM;
+	else
+		status = nvme_submit_io_cmd(dev, &c, NULL);
+
+	if (meta_len) {
+		if (status == NVME_SC_SUCCESS && !(io.opcode & 1)) {
+			int meta_offset = 0;
+
+			for (i = 0; i < meta_iod->nents; i++) {
+				meta = kmap_atomic(sg_page(&meta_iod->sg[i])) + meta_iod->sg[i].offset;
+				memcpy(meta, meta_mem + meta_offset, meta_iod->sg[i].length);
+				kunmap_atomic(meta);
+				meta_offset += meta_iod->sg[i].length;
+			}
+		}
+
+		dma_free_coherent(&dev->pci_dev->dev, meta_len, meta_mem,
+								meta_dma_addr);
+	}
+
+ unmap:
+	nvme_unmap_user_pages(dev, io.opcode & 1, iod);
+	nvme_free_iod(dev, iod);
+
+	if (meta_iod) {
+		nvme_unmap_user_pages(dev, io.opcode & 1, meta_iod);
+		nvme_free_iod(dev, meta_iod);
+	}
+
+	return status;
+}
+
 static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 {
 	struct nvme_dev *dev = ns->dev;
@@ -1580,10 +1760,6 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	if (copy_from_user(&io, uio, sizeof(io)))
 		return -EFAULT;
 	length = (io.nblocks + 1) << ns->lba_shift;
-
-	printk(KERN_NOTICE "metadata address is:%llu\n", io.metadata);
-	printk(KERN_NOTICE "io.nblocks is:%d ns->ms is:%d\n", io.nblocks, ns->ms);
-
 	meta_len = (io.nblocks + 1) * ns->ms;
 
 	if (meta_len && ((io.metadata & 3) || !io.metadata))
@@ -1614,10 +1790,7 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	c.rw.apptag = cpu_to_le16(io.apptag);
 	c.rw.appmask = cpu_to_le16(io.appmask);
 
-	printk(KERN_NOTICE "meta_len is: %d\n", meta_len);
-
 	if (meta_len) {
-		//map the userspace memory pages which belong to the datameta data to meta_iod
 		meta_iod = nvme_map_user_pages(dev, io.opcode & 1, io.metadata,
 								meta_len);
 		if (IS_ERR(meta_iod)) {
@@ -1626,18 +1799,16 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 			goto unmap;
 		}
 
-		//allocate dma memory and return the virtual address of the cpu region (meta_mem) and the corresponding
-		//device dma address handle (meta_dma_addr)
 		meta_mem = dma_alloc_coherent(&dev->pci_dev->dev, meta_len,
 						&meta_dma_addr, GFP_KERNEL);
 		if (!meta_mem) {
 			status = -ENOMEM;
 			goto unmap;
 		}
-		if ( ( strategy == 1 && (io.opcode & 1 || io.opcode & 2) ) || ( strategy == 0 && io.opcode & 1 ) ) {
+
+		if (io.opcode & 1) {
 			int meta_offset = 0;
-			//for each metadata sg page inside meta_iod, map its address to the meta pointer and
-			//then copy it to the cpu dma memory region at an increasing offset
+
 			for (i = 0; i < meta_iod->nents; i++) {
 				meta = kmap_atomic(sg_page(&meta_iod->sg[i])) +
 						meta_iod->sg[i].offset;
@@ -1648,26 +1819,19 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 			}
 		}
 
-		//printk(KERN_NOTICE "meta_dma_addr: %pad\n", &meta_dma_addr);
-		//set the metadata dma address's handle so it can be sent to the device
 		c.rw.metadata = cpu_to_le64(meta_dma_addr);
-		printk(KERN_NOTICE "meta_dma_addr handle is: %llX\n", c.rw.metadata);
 	}
 
 	length = nvme_setup_prps(dev, iod, length, GFP_KERNEL);
 	c.rw.prp1 = cpu_to_le64(sg_dma_address(iod->sg));
 	c.rw.prp2 = cpu_to_le64(iod->first_dma);
-	printk(KERN_NOTICE "c.rw.prp1: %llX\n" ,c.rw.prp1);
-	printk(KERN_NOTICE "c.rw.prp2: %llX\n", c.rw.prp2);
 
 	if (length != (io.nblocks + 1) << ns->lba_shift)
 		status = -ENOMEM;
 	else
 		status = nvme_submit_io_cmd(dev, &c, NULL);
 
-	//if strategy is sector strategy and we're reading -> then also read the metadata buffer, if it exists
-	//don't do this for object strategy, as we're writing to the metadata buffer, and not reading from it
-	if (strategy == 0 && meta_len) {
+	if (meta_len) {
 		if (status == NVME_SC_SUCCESS && !(io.opcode & 1)) {
 			int meta_offset = 0;
 
@@ -1765,6 +1929,10 @@ static int nvme_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 		return ns->ns_id;
 	case NVME_IOCTL_ADMIN_CMD:
 		return nvme_user_admin_cmd(ns->dev, (void __user *)arg);
+	case NVME_IOCTL_OBJECT_CTRL:
+		return nvme_obj_ctrl(ns, (void __user *)arg);
+	case NVME_IOCTL_OBJECT_SUBMIT_IO:
+		return nvme_submit_object_io(ns, (void __user *)arg);
 	case NVME_IOCTL_SUBMIT_IO:
 		return nvme_submit_io(ns, (void __user *)arg);
 	case SG_GET_VERSION_NUM:
@@ -1947,11 +2115,8 @@ static struct nvme_ns *nvme_alloc_ns(struct nvme_dev *dev, unsigned nsid,
 	ns->ns_id = nsid;
 	ns->disk = disk;
 	lbaf = id->flbas & 0xf;
-	printk(KERN_NOTICE "id->flbas is:%d lbaf is:%d\n", id->flbas,lbaf);
 	ns->lba_shift = id->lbaf[lbaf].ds;
 	ns->ms = le16_to_cpu(id->lbaf[lbaf].ms);
-	//ns->ms = 1;
-	printk(KERN_NOTICE "ns->ms is:%d\n", ns->ms);
 	blk_queue_logical_block_size(ns->queue, 1 << ns->lba_shift);
 	if (dev->max_hw_sectors)
 		blk_queue_max_hw_sectors(ns->queue, dev->max_hw_sectors);
@@ -2973,7 +3138,6 @@ static int __init nvme_init(void)
 	result = pci_register_driver(&nvme_driver);
 	if (result)
 		goto unregister_hotcpu;
-	printk(KERN_NOTICE "strategy is: %d\n", strategy);
 	return 0;
 
  unregister_hotcpu:
