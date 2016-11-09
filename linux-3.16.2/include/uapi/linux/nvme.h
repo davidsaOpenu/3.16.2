@@ -190,6 +190,10 @@ enum nvme_opcode {
 	nvme_cmd_write_uncor	= 0x04,
 	nvme_cmd_compare	= 0x05,
 	nvme_cmd_dsm		= 0x09,
+        nvme_cmd_obj_create     = 0x10,
+        nvme_cmd_obj_read       = 0x11,
+        nvme_cmd_obj_write      = 0x12,
+        nvme_cmd_obj_delete     = 0x13,
 };
 
 struct nvme_common_command {
@@ -410,6 +414,26 @@ struct nvme_format_cmd {
 	__u32			rsvd11[5];
 };
 
+
+struct nvme_object_command {
+        __u8                    opcode;
+        __u8                    flags;
+        __u16                   command_id;
+        __le32                  nsid;
+        __u64                   rsvd2;
+        __le64                  metadata;
+        __le64                  prp1;
+        __le64                  prp2;
+        __le64                  slba;
+        __le16                  length;
+        __le16                  control;
+        __le32                  dsmgmt;
+        __le32                  reftag;
+        __le16                  apptag;
+        __le16                  appmask;
+};
+
+
 struct nvme_command {
 	union {
 		struct nvme_common_command common;
@@ -423,6 +447,7 @@ struct nvme_command {
 		struct nvme_format_cmd format;
 		struct nvme_dsm_cmd dsm;
 		struct nvme_abort_cmd abort;
+                struct nvme_object_command object;
 	};
 };
 
