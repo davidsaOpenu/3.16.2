@@ -34,7 +34,7 @@
 *.gcno
 modules.builtin
 Module.symvers
-
+!.config
 #
 # Top-level generic files
 #
