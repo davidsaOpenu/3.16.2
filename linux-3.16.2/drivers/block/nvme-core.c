@@ -1584,7 +1584,10 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	printk(KERN_NOTICE "metadata address is:%llu\n", io.metadata);
 	printk(KERN_NOTICE "io.nblocks is:%d ns->ms is:%d\n", io.nblocks, ns->ms);
 
-	meta_len = (io.nblocks + 1) * ns->ms;
+	if (strategy == 1)
+		meta_len = io.rsvd; /* we'll use the reserved field to pass metadata length for now */
+	else
+		meta_len = (io.nblocks + 1) * ns->ms;
 
 	if (meta_len && ((io.metadata & 3) || !io.metadata))
 		return -EINVAL;
@@ -1608,6 +1611,8 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	c.rw.nsid = cpu_to_le32(ns->ns_id);
 	c.rw.slba = cpu_to_le64(io.slba);
 	c.rw.length = cpu_to_le16(io.nblocks);
+	if (strategy == 1)
+		c.rw.rsvd2 = cpu_to_le64(meta_len); /* we'll use the reserved 2 field to pass metadata length from driver to qemu for now */
 	c.rw.control = cpu_to_le16(io.control);
 	c.rw.dsmgmt = cpu_to_le32(io.dsmgmt);
 	c.rw.reftag = cpu_to_le32(io.reftag);
