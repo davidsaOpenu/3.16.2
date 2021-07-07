@@ -1571,7 +1571,7 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	struct nvme_dev *dev = ns->dev;
 	struct nvme_user_io io;
 	struct nvme_command c;
-	unsigned length, meta_len;
+	unsigned length, meta_len, user_meta_buf_len;
 	int status, i;
 	struct nvme_iod *iod, *meta_iod = NULL;
 	dma_addr_t meta_dma_addr;
@@ -1584,10 +1584,8 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	printk(KERN_NOTICE "metadata address is:%llu\n", io.metadata);
 	printk(KERN_NOTICE "io.nblocks is:%d ns->ms is:%d\n", io.nblocks, ns->ms);
 
-	if (strategy == 1)
-		meta_len = io.rsvd; /* we'll use the reserved field to pass metadata length for now */
-	else
-		meta_len = (io.nblocks + 1) * ns->ms;
+	user_meta_buf_len = io.rsvd; /* we use the rsvd field to pass the user allocated buffer size */
+	meta_len = (io.nblocks + 1) * ns->ms;
 
 	if (meta_len && ((io.metadata & 3) || !io.metadata))
 		return -EINVAL;
@@ -1611,8 +1609,6 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	c.rw.nsid = cpu_to_le32(ns->ns_id);
 	c.rw.slba = cpu_to_le64(io.slba);
 	c.rw.length = cpu_to_le16(io.nblocks);
-	if (strategy == 1)
-		c.rw.rsvd2 = cpu_to_le64(meta_len); /* we'll use the reserved 2 field to pass metadata length from driver to qemu for now */
 	c.rw.control = cpu_to_le16(io.control);
 	c.rw.dsmgmt = cpu_to_le32(io.dsmgmt);
 	c.rw.reftag = cpu_to_le32(io.reftag);
@@ -1624,7 +1620,7 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	if (meta_len) {
 		//map the userspace memory pages which belong to the datameta data to meta_iod
 		meta_iod = nvme_map_user_pages(dev, io.opcode & 1, io.metadata,
-								meta_len);
+								user_meta_buf_len);
 		if (IS_ERR(meta_iod)) {
 			status = PTR_ERR(meta_iod);
 			meta_iod = NULL;
