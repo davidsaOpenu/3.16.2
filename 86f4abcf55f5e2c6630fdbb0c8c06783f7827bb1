@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "aa6d7646_90bacd8c",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1021031
+      },
+      "writtenOn": "2023-07-01T16:42:27Z",
+      "side": 1,
+      "message": "Looks good, amount of possible ID\u0027s might be overkill though",
+      "revId": "86f4abcf55f5e2c6630fdbb0c8c06783f7827bb1",
+      "serverId": "d5d70762-12d0-45a1-890d-524b12d3f735"
+    }
+  ]
+}
