@@ -192,6 +192,13 @@ enum nvme_opcode {
 	nvme_cmd_dsm		= 0x09,
 };
 
+enum nvme_obj_opcode {
+	nvme_obj_cmd_write 	= 0x01,
+	nvme_obj_cmd_read 	= 0x02,
+	nvme_obj_cmd_delete = 0x3,
+	nvme_obj_cmd_list 	= 0x4,
+};
+
 struct nvme_common_command {
 	__u8			opcode;
 	__u8			flags;
@@ -489,6 +496,20 @@ struct nvme_user_io {
 	__u16	appmask;
 };
 
+#define NVME_OBJ_ID_MAXLEN	64
+
+struct nvme_user_obj_io {
+	__u8	opcode;
+	__u32	length; // in/out
+	__u64	addr;
+	__u8	obj_id[NVME_OBJ_ID_MAXLEN];
+};
+
+struct nvme_user_obj_dirent {
+	__u8 	obj_id[NVME_OBJ_ID_MAXLEN];
+	__u32	obj_len;
+};
+
 struct nvme_admin_cmd {
 	__u8	opcode;
 	__u8	flags;
@@ -510,8 +531,10 @@ struct nvme_admin_cmd {
 	__u32	result;
 };
 
-#define NVME_IOCTL_ID		_IO('N', 0x40)
-#define NVME_IOCTL_ADMIN_CMD	_IOWR('N', 0x41, struct nvme_admin_cmd)
-#define NVME_IOCTL_SUBMIT_IO	_IOW('N', 0x42, struct nvme_user_io)
+#define NVME_IOCTL_ID			_IO('N', 0x40)
+#define NVME_IOCTL_ADMIN_CMD		_IOWR('N', 0x41, struct nvme_admin_cmd)
+#define NVME_IOCTL_SUBMIT_IO		_IOW('N', 0x42, struct nvme_user_io)
+/* IOCTL codes 0x43-0x46 are reserved */
+#define NVME_IOCTL_SUBMIT_OBJ_IO	_IOWR('N', 0x47, struct nvme_user_obj_io)
 
 #endif /* _UAPI_LINUX_NVME_H */
