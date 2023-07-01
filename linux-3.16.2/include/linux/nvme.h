@@ -103,6 +103,17 @@ struct nvme_dev {
 	u8 initialized;
 };
 
+#define NVME_OBJ_ID_MAXLEN	256
+struct nvme_fs_obj {
+	struct list_head list;
+
+	u8 obj_id[NVME_OBJ_ID_MAXLEN];
+	u8 obj_id_len;
+
+	void *data; /* Allocated using vmalloc since objects can be big */
+	u32 data_len;
+};
+
 /*
  * An NVM Express namespace is equivalent to a SCSI LUN
  */
@@ -118,6 +129,10 @@ struct nvme_ns {
 	int ms;
 	u64 mode_select_num_blocks;
 	u32 mode_select_block_len;
+
+	// Currently, all file system objects are stored in memory and not in
+	// the disk.
+	struct list_head fs_objects;
 };
 
 /*

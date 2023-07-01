@@ -1976,6 +1976,8 @@ static struct nvme_ns *nvme_alloc_ns(struct nvme_dev *dev, unsigned nsid,
 	if (dev->oncs & NVME_CTRL_ONCS_DSM)
 		nvme_config_discard(ns);
 
+	INIT_LIST_HEAD(&ns->fs_objects);
+
 	return ns;
 
  out_free_queue:
@@ -2612,6 +2614,17 @@ static void nvme_release_instance(struct nvme_dev *dev)
 	spin_unlock(&dev_list_lock);
 }
 
+static void nvme_free_fs_objects(struct nvme_ns *ns)
+{
+	struct nvme_fs_obj *obj, *next;
+
+	list_for_each_entry_safe(obj, next, &ns->fs_objects, list) {
+		list_del(&obj->list);
+		vfree(obj->data);
+		kfree(obj);
+	}
+}
+
 static void nvme_free_namespaces(struct nvme_dev *dev)
 {
 	struct nvme_ns *ns, *next;
@@ -2619,6 +2632,7 @@ static void nvme_free_namespaces(struct nvme_dev *dev)
 	list_for_each_entry_safe(ns, next, &dev->namespaces, list) {
 		list_del(&ns->list);
 		put_disk(ns->disk);
+		nvme_free_fs_objects(ns);
 		kfree(ns);
 	}
 }
