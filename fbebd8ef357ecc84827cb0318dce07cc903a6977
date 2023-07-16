@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "f2b713f5_afc63cff",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 6
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1021031
+      },
+      "writtenOn": "2023-07-16T18:16:50Z",
+      "side": 1,
+      "message": "If possible, could you switch the opcodes to the following:\nobjr \u003d 0\nobjw \u003d 3\nobjl \u003d 4\nobjd \u003d 7",
+      "revId": "fbebd8ef357ecc84827cb0318dce07cc903a6977",
+      "serverId": "d5d70762-12d0-45a1-890d-524b12d3f735"
+    }
+  ]
+}
