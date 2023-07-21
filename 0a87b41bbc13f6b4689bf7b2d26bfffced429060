@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "15a913c6_707b7d0c",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 7
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1021031
+      },
+      "writtenOn": "2023-07-21T20:50:53Z",
+      "side": 1,
+      "message": "I switched to using u64 for offset and length, would be great if you could make the change on your end as well.",
+      "revId": "0a87b41bbc13f6b4689bf7b2d26bfffced429060",
+      "serverId": "d5d70762-12d0-45a1-890d-524b12d3f735"
+    }
+  ]
+}
